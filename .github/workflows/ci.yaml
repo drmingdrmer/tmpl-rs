@@ -1,0 +1,225 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  schedule: [cron: "40 1 * * *"]
+
+jobs:
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - toolchain: "stable"
+            features: "serde"
+          - toolchain: "nightly"
+            features: ""
+          - toolchain: "nightly"
+            features: "bench,serde,bt"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v2
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Build | Release Mode
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --features "${{ matrix.features }}"
+
+
+  test-bench:
+    name: Build in test mode
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - toolchain: "nightly"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v2
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Test build for benchmark
+        uses: actions-rs/cargo@v1
+        with:
+          command: bench
+          args: --features bench nothing-to-run
+
+
+  ut:
+    name: unittest
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - toolchain: "stable"
+            store_defensive: "off"
+            send_delay: "0"
+          - toolchain: "nightly"
+            store_defensive: "on"
+            send_delay: "30"
+          - toolchain: "nightly"
+            store_defensive: "on"
+            send_delay: "0"
+          - toolchain: "nightly"
+            store_defensive: "off"
+            send_delay: "0"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v2
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+          components: rustfmt, clippy
+
+
+      # - A store with defensive checks returns error when unexpected accesses are sent to RaftStore.
+      # - Raft should not depend on defensive error to work correctly.
+      - name: Unit Tests, with and without defensive store
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+        env:
+          # Parallel tests block each other and result in timeout.
+          RUST_TEST_THREADS: 2
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+          OPENRAFT_STORE_DEFENSIVE: ${{ matrix.store_defensive }}
+          OPENRAFT_NETWORK_SEND_DELAY: ${{ matrix.send_delay }}
+
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
+        if: failure()
+        with:
+          name: ut
+          path: |
+            openraft/_log/
+
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1.0.6
+        with:
+          components: rustfmt, clippy
+
+      - name: Format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+
+      - name: Clippy
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --all-targets -- -D warnings
+
+
+      - name: Build-doc
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --all --no-deps
+
+
+  test-examples:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+          - "stable"
+          - "nightly"
+        example:
+          - "raft-kv-memstore"
+          - "raft-kv-rocksdb"
+
+    steps:
+      - uses: actions/checkout@v2
+
+
+      - uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Test examples/${{ matrix.example }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path examples/${{ matrix.example }}/Cargo.toml
+
+
+      - name: Test demo script of examples/${{ matrix.example }}
+        shell: bash
+        run: |
+          cd examples/${{ matrix.example }}
+          ./test-cluster.sh
+
+
+  lint-examples:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+          - "nightly"
+        example:
+          - "raft-kv-memstore"
+          - "raft-kv-rocksdb"
+
+    steps:
+      - uses: actions/checkout@v2
+
+
+      - uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+          components: rustfmt, clippy
+
+
+      - name: Format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --manifest-path examples/${{ matrix.example }}/Cargo.toml --all -- --check
+
+
+      - name: Clippy
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --manifest-path examples/${{ matrix.example }}/Cargo.toml --all-targets -- -D warnings
